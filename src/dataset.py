@@ -51,6 +51,8 @@ STATE_NAME_TO_IDX = {
     "Wyoming": 49,
 }
 
+VALID_STATE_IDXS = sorted(STATE_NAME_TO_IDX.values())
+NUM_STATES = 50  # head should output 0-49 indices (even if only 33 appear)
 
 class GeoGuessrDataset(Dataset):
     def __init__(

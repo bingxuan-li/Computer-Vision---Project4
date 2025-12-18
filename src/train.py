@@ -16,7 +16,7 @@ from dataset import GeoGuessrDataset
 from model import GeoGuessrModel
 
 
-def train_epoch(model, dataloader, criterion_cls, criterion_reg, optimizer, device):
+def train_epoch(model, dataloader, criterion_cls, criterion_reg, optimizer, device, gps_loss_weight=0.1):
     """Train for one epoch."""
     model.train()
     total_loss = 0
@@ -40,7 +40,7 @@ def train_epoch(model, dataloader, criterion_cls, criterion_reg, optimizer, devi
         reg_loss = criterion_reg(gps_coords, gps_target)
         
         # Combined loss (weighted)
-        loss = cls_loss + 0.1 * reg_loss  # Weight GPS loss lower
+        loss = cls_loss + gps_loss_weight * reg_loss
         
         # Backward pass
         optimizer.zero_grad()
@@ -58,7 +58,7 @@ def train_epoch(model, dataloader, criterion_cls, criterion_reg, optimizer, devi
     return avg_loss, avg_cls_loss, avg_reg_loss
 
 
-def validate(model, dataloader, criterion_cls, criterion_reg, device):
+def validate(model, dataloader, criterion_cls, criterion_reg, device, gps_loss_weight=0.1):
     """Validate the model."""
     model.eval()
     total_loss = 0
@@ -83,7 +83,7 @@ def validate(model, dataloader, criterion_cls, criterion_reg, device):
             gps_target = torch.stack([latitude, longitude], dim=1)
             reg_loss = criterion_reg(gps_coords, gps_target)
             
-            loss = cls_loss + 0.1 * reg_loss
+            loss = cls_loss + gps_loss_weight * reg_loss
             
             total_loss += loss.item()
             total_cls_loss += cls_loss.item()
@@ -120,6 +120,8 @@ def main():
                         help='Learning rate')
     parser.add_argument('--num-states', type=int, default=50,
                         help='Number of states to classify')
+    parser.add_argument('--gps-loss-weight', type=float, default=0.1,
+                        help='Weight for GPS regression loss (default: 0.1)')
     parser.add_argument('--checkpoint-dir', type=str, default='models',
                         help='Directory to save model checkpoints')
     args = parser.parse_args()
@@ -192,13 +194,13 @@ def main():
         
         # Train
         train_loss, train_cls_loss, train_reg_loss = train_epoch(
-            model, train_loader, criterion_cls, criterion_reg, optimizer, device
+            model, train_loader, criterion_cls, criterion_reg, optimizer, device, args.gps_loss_weight
         )
         print(f'Train Loss: {train_loss:.4f} (Cls: {train_cls_loss:.4f}, Reg: {train_reg_loss:.4f})')
         
         # Validate
         val_loss, val_cls_loss, val_reg_loss, val_acc = validate(
-            model, val_loader, criterion_cls, criterion_reg, device
+            model, val_loader, criterion_cls, criterion_reg, device, args.gps_loss_weight
         )
         print(f'Val Loss: {val_loss:.4f} (Cls: {val_cls_loss:.4f}, Reg: {val_reg_loss:.4f})')
         print(f'Val Accuracy: {val_acc:.2f}%')

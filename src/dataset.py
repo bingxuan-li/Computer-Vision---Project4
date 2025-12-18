@@ -82,7 +82,8 @@ class GeoGuessrDataset(Dataset):
         if self.labels_df is not None and not self.is_test:
             row = self.labels_df[self.labels_df['sample_id'] == int(sample_id)]
             if len(row) > 0:
-                state_idx = torch.tensor(row.iloc[0]['state_idx_1'], dtype=torch.long)
+                # Convert state_idx from 1-based (CSV) to 0-based (for PyTorch CrossEntropyLoss)
+                state_idx = torch.tensor(row.iloc[0]['state_idx_1'] - 1, dtype=torch.long)
                 latitude = torch.tensor(row.iloc[0]['latitude'], dtype=torch.float32)
                 longitude = torch.tensor(row.iloc[0]['longitude'], dtype=torch.float32)
                 

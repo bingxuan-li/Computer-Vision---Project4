@@ -1,37 +1,114 @@
-# GeoGuessr StreetView
+# GeoGuessr StreetView — StreetCLIP
 
-A Computer Vision project for predicting US state location and GPS coordinates from StreetView images.
+A **multi-view, multi-task vision model** for predicting **US state location** and **GPS coordinates** from StreetView images, built on top of **StreetCLIP (CLIP-based geolocation model)**.
+
+---
 
 ## Overview
 
-This project implements a multi-task deep learning model that takes four directional StreetView images (north, east, south, west) and predicts:
-1. **State Classification**: Top 1-5 most likely US states
-2. **GPS Coordinates**: Latitude and longitude of the location
+This project implements a **StreetCLIP-based multi-view model** that takes **four directional StreetView images** (north, east, south, west) and jointly predicts:
+
+1. **State classification**
+
+   * Full probability distribution over 50 US states
+   * Top-1 and Top-5 accuracy used for evaluation
+2. **GPS regression**
+
+   * Latitude and longitude (continuous)
+
+The model is trained with **multi-task learning** using a weighted loss:
+
+* **70%** state classification loss
+* **30%** GPS regression loss
+
+---
+
+## Model Architecture
+
+### Backbone: StreetCLIP
+
+* Uses the pretrained HuggingFace model
+  **`geolocal/StreetCLIP`**
+* CLIP image encoder pretrained for geolocation tasks
+* Can be **frozen initially** and **unfrozen later** during training
+
+### Multi-View Processing
+
+* Each of the 4 views (N / E / S / W) is encoded **independently** using the same CLIP image encoder
+* Image features are then **fused** using a lightweight fusion module
+
+### Feature Fusion
+
+Supported fusion strategies:
+
+* Transformer-based fusion (default)
+* Attention-based fusion
+* Simple concatenation (configurable)
+
+### Output Heads
+
+* **State head**
+
+  * Linear + softmax
+  * Outputs probabilities over 50 states
+* **GPS head**
+
+  * MLP regression head
+  * Outputs `(latitude, longitude)`
+
+---
 
 ## Dataset Format
 
 ### Input Images
-For each sample, the dataset should contain 4 images:
-- `img_XXXXXX_north.jpg` - North-facing view
-- `img_XXXXXX_east.jpg` - East-facing view
-- `img_XXXXXX_south.jpg` - South-facing view
-- `img_XXXXXX_west.jpg` - West-facing view
 
-Where `XXXXXX` is the sample ID (e.g., `000001`, `000042`, etc.)
+Each sample consists of **four images**, stored in a directory:
 
-### Training Labels (CSV Format)
-Training labels should be provided in a CSV file with the following columns:
-- `sample_id`: Integer ID of the sample
-- `state_idx_1`: Primary state prediction (1-50, representing US states)
-- `latitude`: GPS latitude coordinate
-- `longitude`: GPS longitude coordinate
+```
+img_000000_north.jpg
+img_000000_east.jpg
+img_000000_south.jpg
+img_000000_west.jpg
+```
+
+Where `000000` is the **sample ID**.
+
+---
+
+### Training Labels (CSV)
+
+Training data requires a CSV file with:
+
+| Column      | Description                              |
+| ----------- | ---------------------------------------- |
+| `sample_id` | Integer sample ID                        |
+| `state`     | State name (string, e.g. `"California"`) |
+| `latitude`  | GPS latitude                             |
+| `longitude` | GPS longitude                            |
 
 Example:
+
 ```csv
-sample_id,state_idx_1,latitude,longitude
-1,5,34.0522,-118.2437
-2,33,40.7128,-74.0060
+sample_id,state,latitude,longitude
+0,California,37.7749,-122.4194
+1,Texas,30.2672,-97.7431
 ```
+
+Internally, state names are mapped to **state indices (0–49)**.
+
+---
+
+### Test Data (No CSV)
+
+For the test set:
+
+* **No CSV file is required**
+* The dataset is built by **scanning the image directory**
+* Samples are inferred automatically from filenames
+
+Only samples with **all four views present** are used.
+
+---
 
 ## Installation
 
@@ -39,128 +116,116 @@ sample_id,state_idx_1,latitude,longitude
 pip install -r requirements.txt
 ```
 
-## Usage
+Main dependencies:
 
-### Training
+* Python 3.8+
+* PyTorch
+* HuggingFace Transformers
+* torchvision
+* NumPy
+* pandas
+* PIL
+* Weights & Biases (optional)
 
-Train the model on your dataset:
+---
 
-```bash
-python src/train.py \
-    --data-dir data/train \
-    --csv-file data/train_labels.csv \
-    --val-dir data/val \
-    --val-csv data/val_labels.csv \
-    --batch-size 8 \
-    --epochs 50 \
-    --lr 0.001 \
-    --num-states 50 \
-    --checkpoint-dir models
-```
+## Training
 
-**Arguments:**
-- `--data-dir`: Directory containing training images
-- `--csv-file`: Path to training labels CSV
-- `--val-dir`: Directory containing validation images
-- `--val-csv`: Path to validation labels CSV
-- `--batch-size`: Batch size for training (default: 8)
-- `--epochs`: Number of training epochs (default: 50)
-- `--lr`: Learning rate (default: 0.001)
-- `--num-states`: Number of states to classify (default: 50)
-- `--checkpoint-dir`: Directory to save model checkpoints (default: models)
-
-### Prediction
-
-Generate predictions on test data:
+Train the model using the provided `train.py`:
 
 ```bash
-python src/predict.py \
-    --test-dir data/test \
-    --model-path models/best_model.pth \
-    --output-csv submission.csv \
-    --batch-size 8 \
-    --num-states 50 \
-    --num-top-states 5
+python train.py
 ```
 
-**Arguments:**
-- `--test-dir`: Directory containing test images
-- `--model-path`: Path to trained model checkpoint
-- `--output-csv`: Path to output submission CSV file (default: submission.csv)
-- `--batch-size`: Batch size for inference (default: 8)
-- `--num-states`: Number of states in the model (default: 50)
-- `--num-top-states`: Number of top state predictions to include (1-5, default: 5)
+Key training features:
 
-### Submission File Format
+* Multi-GPU support via `nn.DataParallel`
+* CLIP freezing/unfreezing by step count
+* Cosine learning rate schedule with warmup
+* Automatic checkpointing:
 
-The generated submission CSV will contain the following columns:
+  * Best model
+  * Per-epoch checkpoints
+  * Final checkpoint
+* Optional Weights & Biases logging
 
-| Column | Type | Description |
-|--------|------|-------------|
-| `sample_id` | int | Test sample ID |
-| `image_north` | str | Filename of north-facing image |
-| `image_east` | str | Filename of east-facing image |
-| `image_south` | str | Filename of south-facing image |
-| `image_west` | str | Filename of west-facing image |
-| `state_idx_1` | int | Primary state prediction (required) |
-| `state_idx_2` | int | Second state prediction (optional) |
-| `state_idx_3` | int | Third state prediction (optional) |
-| `state_idx_4` | int | Fourth state prediction (optional) |
-| `state_idx_5` | int | Fifth state prediction (optional) |
-| `latitude` | float | Predicted latitude |
-| `longitude` | float | Predicted longitude |
+Important config options (defined inside `train.py`):
 
-Example submission.csv:
+* `freeze_clip_steps`
+* `fusion` type
+* batch size
+* learning rate
+* number of epochs
+
+---
+
+## Inference / Prediction
+
+Run inference on a **directory-only test set**:
+
+```bash
+python infer.py \
+  --ckpt outputs_streetclip_freeze/checkpoints/best.pt \
+  --images_dir data/test \
+  --out_csv submission.csv \
+  --batch_size 64 \
+  --amp
+```
+
+---
+
+## Output Submission Format
+
+The generated CSV contains:
+
+| Column                  | Description                 |
+| ----------------------- | --------------------------- |
+| `sample_id`             | Sample ID                   |
+| `image_north`           | North-facing image filename |
+| `image_east`            | East-facing image filename  |
+| `image_south`           | South-facing image filename |
+| `image_west`            | West-facing image filename  |
+| `predicted_state_idx_1` | Top-1 predicted state       |
+| `predicted_state_idx_2` | Top-2 predicted state       |
+| `predicted_state_idx_3` | Top-3 predicted state       |
+| `predicted_state_idx_4` | Top-4 predicted state       |
+| `predicted_state_idx_5` | Top-5 predicted state       |
+| `predicted_latitude`    | Predicted latitude          |
+| `predicted_longitude`   | Predicted longitude         |
+
+Example:
+
 ```csv
-sample_id,image_north,image_east,image_south,image_west,state_idx_1,state_idx_2,state_idx_3,state_idx_4,state_idx_5,latitude,longitude
-1,img_000001_north.jpg,img_000001_east.jpg,img_000001_south.jpg,img_000001_west.jpg,5,33,48,6,36,34.0522,-118.2437
-2,img_000002_north.jpg,img_000002_east.jpg,img_000002_south.jpg,img_000002_west.jpg,33,22,9,5,36,40.7128,-74.0060
+sample_id,image_north,image_east,image_south,image_west,predicted_state_idx_1,predicted_state_idx_2,predicted_state_idx_3,predicted_state_idx_4,predicted_state_idx_5,predicted_latitude,predicted_longitude
+0,img_000000_north.jpg,img_000000_east.jpg,img_000000_south.jpg,img_000000_west.jpg,4,43,45,18,48,37.7749,-122.4194
 ```
 
-## Model Architecture
-
-The model uses a multi-task learning approach with:
-
-1. **Feature Extraction**: ResNet-50 pretrained on ImageNet
-2. **Multi-Image Processing**: Processes all 4 directional images independently
-3. **Feature Fusion**: Concatenates and fuses features from all directions
-4. **Multi-Task Heads**:
-   - State Classification head: Predicts probability distribution over 50 states
-   - GPS Regression head: Predicts latitude and longitude coordinates
+---
 
 ## Project Structure
 
 ```
 Computer-Vision---Project4/
-├── src/
-│   ├── dataset.py      # Dataset loader for 4-direction images
-│   ├── model.py        # Model architecture
-│   ├── train.py        # Training script
-│   └── predict.py      # Inference and submission generation
+├── dataset.py          # Train/test dataset loaders
+├── model.py            # StreetCLIPMultiView model
+├── train.py            # Training script
+├── infer.py            # Inference + CSV generation
 ├── data/
 │   ├── train/          # Training images
 │   ├── val/            # Validation images
-│   └── test/           # Test images
-├── models/             # Saved model checkpoints
-├── requirements.txt    # Python dependencies
-└── README.md          # This file
+│   └── test/           # Test images (directory only)
+├── outputs_streetclip_freeze/
+│   └── checkpoints/    # Saved checkpoints
+├── requirements.txt
+└── README.md
 ```
 
-## Requirements
-
-- Python 3.7+
-- PyTorch 1.9+
-- torchvision
-- PIL
-- NumPy
-- pandas
-- scikit-learn
-- tqdm
+---
 
 ## Notes
 
-- The model expects images in JPG format
-- All images are resized to 224x224 for processing
-- State indices are 1-indexed (1-50)
-- GPS coordinates are in decimal degrees
-- The model can run on CPU or GPU (automatically detected)
+* Images are processed using **CLIPProcessor** (no manual resizing needed)
+* State indices are **0–49**
+* GPS coordinates are predicted in **decimal degrees**
+* AMP (`--amp`) is recommended for faster inference on GPU
+* The model works on **CPU or GPU** automatically

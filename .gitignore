@@ -59,3 +59,5 @@ Thumbs.db
 wandb
 outputs_*
 *.sbatch
+*.sh
+results/

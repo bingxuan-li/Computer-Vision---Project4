@@ -82,6 +82,16 @@ def save_ckpt(path: str, model: nn.Module, optimizer: torch.optim.Optimizer,
     }
     torch.save(ckpt, path)
 
+def _get_base_model(model: nn.Module) -> nn.Module:
+    return model.module if isinstance(model, nn.DataParallel) else model
+
+def set_clip_trainable(model: nn.Module, trainable: bool):
+    m = _get_base_model(model)
+    # assumes your StreetCLIPMultiView stores the HF CLIP model as m.clip (adjust if different)
+    assert hasattr(m, "clip"), "StreetCLIPMultiView must have attribute `clip` (HF CLIPModel)."
+    for p in m.clip.parameters():
+        p.requires_grad = trainable
+
 
 
 # ----------------------------
@@ -96,8 +106,10 @@ def train_one_epoch(
     epoch: int,
     log_every: int,
     use_wandb: bool,
+    global_step: int, 
+    freeze_clip_steps: int = 0,
     max_grad_norm: float = 1.0,
-) -> Dict[str, float]:
+) -> Tuple[Dict[str, float], int]:
     model.train()
     t0 = time.time()
 
@@ -109,6 +121,12 @@ def train_one_epoch(
     n_batches = 0
 
     for it, batch in enumerate(loader):
+        
+        # Unfreeze CLIP exactly once when we cross the threshold
+        if freeze_clip_steps > 0 and global_step == freeze_clip_steps:
+            set_clip_trainable(model, True)
+            print(f"[Step {global_step}] Unfroze CLIP encoder")
+        
         n_batches += 1
         pv_n = batch["pixel_values_n"].to(device, non_blocking=True)
         pv_e = batch["pixel_values_e"].to(device, non_blocking=True)
@@ -157,16 +175,20 @@ def train_one_epoch(
                 },
                 commit=True,
             )
+        global_step += 1
+
 
     dt = time.time() - t0
-    return {
+    return ({
         "loss": loss_meter / n_batches,
         "loss_ce": ce_meter / n_batches,
         "loss_gps": gps_meter / n_batches,
         "top1": top1_meter / n_batches,
         "top5": top5_meter / n_batches,
-        "sec": dt,
-    }
+        "sec": dt, 
+        },
+        global_step
+    )
 
 
 @torch.no_grad()
@@ -235,7 +257,7 @@ def main():
     train_images = "/vast/bl3912/dataset/extracted_files/kaggle_dataset/train_images/"
 
     # ---- Output / ckpt ----
-    out_dir = "/vast/bl3912/outputs_streetclip"
+    out_dir = "/vast/bl3912/outputs_streetclip_freeze/"
     ckpt_dir = os.path.join(out_dir, "checkpoints")
     os.makedirs(ckpt_dir, exist_ok=True)
 
@@ -247,8 +269,10 @@ def main():
         "fusion": "transformer",
         "batch_size": 16,
         "num_workers": 16,
-        "epochs": 5,
-        "lr": 3e-5,                 # reasonable for CLIP finetune
+        "epochs": 10,
+        "freeze_clip_steps": 2000,   # number of optimizer steps to keep CLIP frozen
+        "unfreeze_lr_mult": 1.0,     # optional: when unfreezing, you can change LR via new optimizer (see note below)
+        "lr": 2e-5,                 # reasonable for CLIP finetune
         "weight_decay": 0.05,
         "warmup_ratio": 0.05,
         "log_every": 50,
@@ -330,6 +354,12 @@ def main():
         model = nn.DataParallel(model)
 
     model = model.to(device)
+    
+    # freeze CLIP at start
+    if cfg.get("freeze_clip_steps", 0) > 0:
+        set_clip_trainable(model, False)
+        print(f"CLIP frozen for first {cfg['freeze_clip_steps']} steps")
+
 
 
     # ---- Optimizer ----
@@ -357,7 +387,7 @@ def main():
         json.dump(cfg, f, indent=2)
 
     for epoch in range(cfg["epochs"]):
-        train_metrics = train_one_epoch(
+        train_metrics, global_step = train_one_epoch(
             model=model,
             loader=train_loader,
             optimizer=optimizer,
@@ -367,6 +397,8 @@ def main():
             log_every=cfg["log_every"],
             use_wandb=use_wandb,
             max_grad_norm=cfg["max_grad_norm"],
+            global_step=global_step,
+            freeze_clip_steps=cfg.get("freeze_clip_steps", 0),
         )
 
         # evaluate
